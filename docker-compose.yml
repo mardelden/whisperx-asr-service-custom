@@ -19,6 +19,10 @@ services:
 
     ports:
       - "9000:9000"
+      - "${RAY_DASHBOARD_PORT:-8265}:8265"  # Ray dashboard (only used in ray mode)
+
+    # Ray uses /dev/shm for object store
+    shm_size: '2g'
 
     environment:
       # All values loaded from .env file
@@ -32,6 +36,15 @@ services:
       - NLTK_DATA=/.cache/nltk_data
       - PRELOAD_MODEL=${PRELOAD_MODEL:-}
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-1000}
+      # Serve mode: simple (uvicorn) or ray (Ray Serve)
+      - SERVE_MODE=${SERVE_MODE:-simple}
+      # Ray Serve batching config
+      - WHISPER_BATCH_SIZE=${WHISPER_BATCH_SIZE:-4}
+      - ALIGN_BATCH_SIZE=${ALIGN_BATCH_SIZE:-8}
+      - DIARIZE_BATCH_SIZE=${DIARIZE_BATCH_SIZE:-2}
+      - BATCH_WAIT_TIMEOUT=${BATCH_WAIT_TIMEOUT:-0.1}
+      # GPU concurrency for simple mode queue
+      - GPU_CONCURRENCY=${GPU_CONCURRENCY:-1}
 
     volumes:
       # Persistent cache for models (recommended)

@@ -7,18 +7,28 @@ import os
 import tempfile
 import logging
 import warnings
-import gc
-import math
-import numpy as np
-from typing import Optional, List
+from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Form, Query, HTTPException
+from fastapi import FastAPI, File, UploadFile, Query, HTTPException
 from fastapi.responses import JSONResponse
 import whisperx
+
 from app.version import __version__
-from whisperx.diarize import DiarizationPipeline
-import torch
+from app.pipeline import (
+    DEVICE,
+    COMPUTE_TYPE,
+    BATCH_SIZE,
+    HF_TOKEN,
+    DEFAULT_MODEL,
+    load_whisper_model,
+    clear_gpu_memory,
+    format_timestamp,
+    sanitize_float_values,
+    run_pipeline,
+    _whisper_models as loaded_models,
+)
+from app.queue import run_in_queue, get_queue_metrics
 
 # Suppress pyannote pooling warnings about degrees of freedom
 warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
@@ -30,6 +40,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))
+SERVE_MODE = os.getenv("SERVE_MODE", "simple")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="WhisperX ASR API",
@@ -37,21 +50,9 @@ app = FastAPI(
     version=__version__
 )
 
-# Configuration from environment variables
-DEVICE = os.getenv("DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float16" if DEVICE == "cuda" else "int8")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "16"))
-HF_TOKEN = os.getenv("HF_TOKEN", None)
-CACHE_DIR = os.getenv("CACHE_DIR", "/.cache")
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))  # Default 1GB limit
-DEFAULT_MODEL = os.getenv("PRELOAD_MODEL", "large-v3")
-
-# Model cache
-loaded_models = {}
-
 logger.info(f"WhisperX ASR Service v{__version__} initialized on device: {DEVICE}")
 logger.info(f"Compute type: {COMPUTE_TYPE}, Batch size: {BATCH_SIZE}")
-logger.info(f"Default model: {DEFAULT_MODEL}")
+logger.info(f"Default model: {DEFAULT_MODEL}, Serve mode: {SERVE_MODE}")
 
 
 @app.on_event("startup")
@@ -67,67 +68,6 @@ async def startup_event():
             logger.error(f"Failed to preload model {preload_model}: {str(e)}")
 
 
-def load_whisper_model(model_name: str):
-    """Load WhisperX model with caching"""
-    if model_name not in loaded_models:
-        logger.info(f"Loading WhisperX model: {model_name}")
-        try:
-            model = whisperx.load_model(
-                model_name,
-                device=DEVICE,
-                compute_type=COMPUTE_TYPE,
-                download_root=CACHE_DIR
-            )
-            loaded_models[model_name] = model
-            logger.info(f"Model {model_name} loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
-
-    return loaded_models[model_name]
-
-
-def clear_gpu_memory():
-    """Clear GPU memory cache to prevent VRAM buildup"""
-    if DEVICE == "cuda":
-        gc.collect()
-        torch.cuda.empty_cache()
-        logger.debug("GPU memory cache cleared")
-
-
-def format_timestamp(seconds: float) -> str:
-    """Convert seconds to SRT timestamp format"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds % 1) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-
-def sanitize_float_values(obj):
-    """
-    Recursively sanitize float values in nested structures to ensure JSON compliance.
-    Replaces NaN and Inf values with None, and converts numpy arrays to lists.
-    """
-    if isinstance(obj, dict):
-        return {key: sanitize_float_values(value) for key, value in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [sanitize_float_values(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        return sanitize_float_values(obj.tolist())
-    elif isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    elif isinstance(obj, (np.floating, np.integer)):
-        value = float(obj)
-        if math.isnan(value) or math.isinf(value):
-            return None
-        return value
-    else:
-        return obj
-
-
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -135,7 +75,8 @@ async def root():
         "status": "running",
         "service": "WhisperX ASR API",
         "device": DEVICE,
-        "compute_type": COMPUTE_TYPE
+        "compute_type": COMPUTE_TYPE,
+        "serve_mode": SERVE_MODE,
     }
 
 
@@ -147,14 +88,14 @@ async def transcribe_audio(
     initial_prompt: Optional[str] = Query(None),
     word_timestamps: bool = Query(True),
     output_format: str = Query("json"),
-    output: Optional[str] = Query(None),  # Legacy parameter name compatibility
+    output: Optional[str] = Query(None),
     model: str = Query(DEFAULT_MODEL),
     num_speakers: Optional[int] = Query(None),
-    min_speakers: Optional[int] = Query(None),  # Accept from query params
-    max_speakers: Optional[int] = Query(None),  # Accept from query params
-    diarize: Optional[bool] = Query(None),  # Enable speaker diarization (compatible with whisper-asr-webservice)
-    enable_diarization: Optional[bool] = Query(None),  # Alias for diarize (deprecated)
-    return_speaker_embeddings: Optional[bool] = Query(None)  # Accept from query params
+    min_speakers: Optional[int] = Query(None),
+    max_speakers: Optional[int] = Query(None),
+    diarize: Optional[bool] = Query(None),
+    enable_diarization: Optional[bool] = Query(None),
+    return_speaker_embeddings: Optional[bool] = Query(None),
 ):
     """
     Main ASR endpoint compatible with openai-whisper-asr-webservice
@@ -177,16 +118,15 @@ async def transcribe_audio(
     temp_audio_path = None
 
     try:
-        # Handle legacy parameter names and query param defaults
+        # Handle legacy parameter names
         if output is not None:
-            output_format = output  # Support legacy 'output' parameter
+            output_format = output
 
-        # Set defaults for query parameters (since Query(None) allows None)
-        # Handle diarize/enable_diarization: use either param, default to True if neither specified
+        # Resolve diarization toggle
         if diarize is not None or enable_diarization is not None:
             should_diarize = (diarize is True) or (enable_diarization is True)
         else:
-            should_diarize = True  # Default to enabled
+            should_diarize = True
         if return_speaker_embeddings is None:
             return_speaker_embeddings = False
 
@@ -210,113 +150,26 @@ async def transcribe_audio(
 
         logger.info(f"Processing audio file: {audio_file.filename} ({file_size_mb:.1f}MB), model: {model}, language: {language}")
 
-        # Load model
-        whisper_model = load_whisper_model(model)
-
-        # Step 1: Transcribe with WhisperX
-        logger.info("Starting transcription...")
+        # Load audio
         audio = whisperx.load_audio(temp_audio_path)
 
-        transcribe_options = {
-            "batch_size": BATCH_SIZE,
-            "language": language,
-            "task": task
-        }
-
-        if initial_prompt:
-            transcribe_options["initial_prompt"] = initial_prompt
-
-        result = whisper_model.transcribe(audio, **transcribe_options)
+        # Run pipeline through the async queue (GPU semaphore)
+        result, speaker_embeddings = await run_in_queue(
+            run_pipeline,
+            audio,
+            model_name=model,
+            language=language,
+            task=task,
+            initial_prompt=initial_prompt,
+            word_timestamps=word_timestamps,
+            should_diarize=should_diarize,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            return_speaker_embeddings=return_speaker_embeddings,
+        )
 
         detected_language = result.get("language", language or "en")
-        logger.info(f"Transcription complete. Detected language: {detected_language}")
-
-        # Clear GPU memory after transcription
-        clear_gpu_memory()
-
-        # Step 2: Align whisper output with word-level timestamps
-        if word_timestamps:
-            logger.info("Aligning timestamps...")
-            try:
-                model_a, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
-                    device=DEVICE,
-                    model_dir=CACHE_DIR
-                )
-                result = whisperx.align(
-                    result["segments"],
-                    model_a,
-                    metadata,
-                    audio,
-                    DEVICE,
-                    return_char_alignments=False
-                )
-                logger.info("Timestamp alignment complete")
-
-                # Clear GPU memory after alignment
-                del model_a
-                clear_gpu_memory()
-            except Exception as e:
-                logger.warning(f"Timestamp alignment failed: {str(e)}, continuing without word-level timestamps")
-
-        # Step 3: Speaker diarization (if enabled and HF token available)
-        speaker_embeddings = None
-        if should_diarize and HF_TOKEN:
-            logger.info("Starting speaker diarization with pyannote community-1...")
-            try:
-                # Load WhisperX diarization pipeline
-                diarize_model = DiarizationPipeline(
-                    model_name="pyannote/speaker-diarization-community-1",
-                    use_auth_token=HF_TOKEN,
-                    device=torch.device(DEVICE)
-                )
-
-                # Prepare diarization parameters
-                diarize_params = {}
-                if num_speakers is not None:
-                    # If exact number is provided, use it (overrides min/max)
-                    diarize_params["num_speakers"] = num_speakers
-                    logger.info(f"Diarization with exact speaker count: {num_speakers}")
-                else:
-                    # Otherwise use min/max range
-                    if min_speakers is not None:
-                        diarize_params["min_speakers"] = min_speakers
-                    if max_speakers is not None:
-                        diarize_params["max_speakers"] = max_speakers
-                    logger.info(f"Diarization with speaker range: {min_speakers}-{max_speakers}")
-
-                # Add return_embeddings parameter if requested
-                if return_speaker_embeddings:
-                    diarize_params["return_embeddings"] = True
-                    logger.info("Speaker embeddings will be returned")
-
-                # Run diarization
-                diarize_output = diarize_model(audio, **diarize_params)
-
-                # Check if embeddings were returned
-                if return_speaker_embeddings and isinstance(diarize_output, tuple):
-                    diarize_segments, speaker_embeddings = diarize_output
-                    logger.info(f"Received speaker embeddings for {len(speaker_embeddings)} speakers")
-                else:
-                    diarize_segments = diarize_output
-
-                # Try to access exclusive_speaker_diarization (new in community-1)
-                # This simplifies reconciliation with transcription timestamps
-                if hasattr(diarize_segments, 'exclusive_speaker_diarization'):
-                    diarize_segments = diarize_segments.exclusive_speaker_diarization
-                    logger.info("Using exclusive speaker diarization for better timestamp reconciliation")
-
-                # Assign speakers to words
-                result = whisperx.assign_word_speakers(diarize_segments, result)
-                logger.info("Speaker diarization complete")
-
-                # Clear GPU memory after diarization
-                del diarize_model
-                clear_gpu_memory()
-            except Exception as e:
-                logger.warning(f"Speaker diarization failed: {str(e)}, continuing without diarization")
-        elif should_diarize and not HF_TOKEN:
-            logger.warning("Speaker diarization requested but HF_TOKEN not set")
 
         # Format output based on requested format
         if output_format == "json":
@@ -327,9 +180,7 @@ async def transcribe_audio(
                 "word_segments": result.get("word_segments", [])
             }
 
-            # Add speaker embeddings if they were requested and available
             if return_speaker_embeddings and speaker_embeddings:
-                # Sanitize embeddings to ensure JSON compliance (remove NaN/Inf values)
                 response_data["speaker_embeddings"] = sanitize_float_values(speaker_embeddings)
                 logger.info(f"Including speaker embeddings in response: {list(speaker_embeddings.keys())}")
 
@@ -388,7 +239,6 @@ async def transcribe_audio(
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        # Clean up temporary file
         if temp_audio_path and os.path.exists(temp_audio_path):
             try:
                 os.unlink(temp_audio_path)
@@ -402,8 +252,22 @@ async def health_check():
     return {
         "status": "healthy",
         "device": DEVICE,
-        "loaded_models": list(loaded_models.keys())
+        "loaded_models": list(loaded_models.keys()),
+        "serve_mode": SERVE_MODE,
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Queue and pipeline metrics"""
+    data = {
+        "serve_mode": SERVE_MODE,
+        "device": DEVICE,
+        "loaded_models": list(loaded_models.keys()),
+    }
+    if SERVE_MODE == "simple":
+        data["queue"] = get_queue_metrics()
+    return data
 
 
 # Register OpenAI-compatible API routers

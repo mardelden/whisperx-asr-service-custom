@@ -24,21 +24,23 @@ from app.schemas import (
     OpenAIErrorDetail,
     OpenAIErrorResponse,
 )
-
-# Import shared resources from main module
-from app.main import (
-    load_whisper_model,
-    clear_gpu_memory,
-    format_timestamp,
+from app.pipeline import (
     DEVICE,
     BATCH_SIZE,
     CACHE_DIR,
     DEFAULT_MODEL,
-    MAX_FILE_SIZE_MB,
-    loaded_models,
+    load_whisper_model,
+    clear_gpu_memory,
+    format_timestamp,
+    transcribe as pipeline_transcribe,
+    align as pipeline_align,
+    _whisper_models as loaded_models,
 )
+from app.queue import run_in_queue
 
 logger = logging.getLogger(__name__)
+
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))
 
 router = APIRouter(prefix="/v1/audio", tags=["OpenAI Compatible"])
 models_router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])
@@ -87,13 +89,11 @@ def format_verbose_json_response(
 ) -> TranscriptionVerboseJsonResponse:
     """Format WhisperX result as OpenAI verbose_json response"""
 
-    # Build full text from segments
     full_text = " ".join([
         seg.get("text", "").strip()
         for seg in result.get("segments", [])
     ]).strip()
 
-    # Build segments list
     segments = []
     if include_segments:
         for idx, seg in enumerate(result.get("segments", [])):
@@ -110,12 +110,10 @@ def format_verbose_json_response(
                 no_speech_prob=0.0
             ))
 
-    # Build words list from word_segments
     words = None
     if include_words:
         words = []
         word_segments = result.get("word_segments", [])
-        # Also check segments for word-level data
         if not word_segments:
             for seg in result.get("segments", []):
                 word_segments.extend(seg.get("words", []))
@@ -153,12 +151,30 @@ def format_vtt_response(result: dict) -> str:
     """Format WhisperX result as WebVTT subtitle format"""
     vtt_content = ["WEBVTT\n"]
     for segment in result.get("segments", []):
-        # VTT uses period for milliseconds, not comma
         start_time = format_timestamp(segment.get("start", 0)).replace(',', '.')
         end_time = format_timestamp(segment.get("end", 0)).replace(',', '.')
         text = segment.get("text", "").strip()
         vtt_content.append(f"{start_time} --> {end_time}\n{text}\n")
     return "\n".join(vtt_content)
+
+
+def _run_transcribe_and_align(
+    audio,
+    whisperx_model: str,
+    language: Optional[str],
+    task: str,
+    need_word_timestamps: bool,
+):
+    """Blocking helper that runs transcription + optional alignment on GPU."""
+    result = pipeline_transcribe(
+        audio,
+        model_name=whisperx_model,
+        language=language,
+        task=task,
+    )
+    if need_word_timestamps:
+        result = pipeline_align(audio, result)
+    return result
 
 
 async def process_audio(
@@ -180,7 +196,6 @@ async def process_audio(
         # Validate model
         whisperx_model = MODEL_MAPPING.get(model)
         if not whisperx_model:
-            # If not in mapping, try using directly (allows large-v3, etc.)
             if model in ["tiny", "base", "small", "medium", "large-v2", "large-v3"]:
                 whisperx_model = model
             else:
@@ -224,56 +239,29 @@ async def process_audio(
 
         logger.info(f"OpenAI-compat: Processing {file.filename} ({file_size_mb:.1f}MB), model: {whisperx_model}, task: {task}")
 
-        # Load model (uses cached if available)
-        whisper_model = load_whisper_model(whisperx_model)
+        if prompt:
+            logger.warning("prompt parameter provided but not supported by WhisperX - ignoring")
 
         # Load audio
         audio = whisperx.load_audio(temp_audio_path)
         duration = len(audio) / 16000  # WhisperX loads at 16kHz
 
-        # Transcription options
-        # Note: WhisperX FasterWhisperPipeline doesn't support initial_prompt
-        transcribe_options = {
-            "batch_size": BATCH_SIZE,
-            "language": language,
-            "task": task
-        }
-        if prompt:
-            logger.warning("prompt parameter provided but not supported by WhisperX - ignoring")
-
-        # Run transcription
-        result = whisper_model.transcribe(audio, **transcribe_options)
-        detected_language = result.get("language", language or "en")
-
-        clear_gpu_memory()
-
-        # Determine if we need word-level alignment
         need_word_timestamps = (
             response_format == ResponseFormat.VERBOSE_JSON and
             "word" in timestamp_granularities
         )
 
-        # Run alignment if needed for word timestamps
-        if need_word_timestamps:
-            try:
-                model_a, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
-                    device=DEVICE,
-                    model_dir=CACHE_DIR
-                )
-                result = whisperx.align(
-                    result["segments"],
-                    model_a,
-                    metadata,
-                    audio,
-                    DEVICE,
-                    return_char_alignments=False
-                )
-                del model_a
-                clear_gpu_memory()
-            except Exception as e:
-                logger.warning(f"Word alignment failed: {e}")
-                # Continue without word timestamps
+        # Run through the async queue
+        result = await run_in_queue(
+            _run_transcribe_and_align,
+            audio,
+            whisperx_model,
+            language,
+            task,
+            need_word_timestamps,
+        )
+
+        detected_language = result.get("language", language or "en")
 
         # Format response based on requested format
         if response_format == ResponseFormat.JSON:
@@ -312,7 +300,6 @@ async def process_audio(
             )
             return JSONResponse(content=response.model_dump(exclude_none=True))
 
-        # Should not reach here
         return create_openai_error(400, f"Unsupported response format: {response_format}")
 
     except HTTPException as e:
@@ -351,16 +338,10 @@ async def create_transcription(
     Transcribes audio into the input language.
 
     OpenAI-compatible endpoint: POST /v1/audio/transcriptions
-
-    Returns transcription in the requested format. When using verbose_json,
-    you can request word-level and/or segment-level timestamps via
-    timestamp_granularities[].
     """
-    # Parse timestamp_granularities from form data (handles timestamp_granularities[]=word format)
     form_data = await request.form()
     timestamp_granularities = form_data.getlist("timestamp_granularities[]")
 
-    # Default timestamp_granularities to segment if verbose_json but not specified
     if not timestamp_granularities:
         timestamp_granularities = []
     if response_format == ResponseFormat.VERBOSE_JSON and not timestamp_granularities:
@@ -394,11 +375,7 @@ async def create_translation(
     Translates audio into English.
 
     OpenAI-compatible endpoint: POST /v1/audio/translations
-
-    Similar to transcriptions but always outputs English text regardless
-    of the source language.
     """
-    # Parse timestamp_granularities from form data (handles timestamp_granularities[]=word format)
     form_data = await request.form()
     timestamp_granularities = form_data.getlist("timestamp_granularities[]")
 
@@ -410,7 +387,7 @@ async def create_translation(
     return await process_audio(
         file=file,
         model=model,
-        language=None,  # Translation doesn't take language param
+        language=None,
         prompt=prompt,
         response_format=response_format,
         temperature=temperature,
@@ -437,8 +414,6 @@ async def list_models():
     List available models.
 
     OpenAI-compatible endpoint: GET /v1/models
-
-    Returns a list of available whisper models that can be used for transcription.
     """
     return {
         "object": "list",

@@ -48,7 +48,8 @@ RUN pip3 install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     python-multipart==0.0.6 \
-    pydantic==2.5.0
+    pydantic==2.5.0 \
+    "ray[serve]>=2.9"
 
 # Pre-download NLTK data for timestamp alignment (enables offline use)
 RUN python3 -c "import nltk; nltk.download('punkt_tab', download_dir='/.cache/nltk_data')"
@@ -60,12 +61,18 @@ RUN mkdir -p /.cache && chmod 777 /.cache
 # Copy application code
 COPY app /workspace/app
 
-# Expose API port
-EXPOSE 9000
+# Copy entrypoint script
+COPY entrypoint.sh /workspace/entrypoint.sh
+RUN chmod +x /workspace/entrypoint.sh
+
+# Expose API port (9000) and Ray dashboard (8265)
+EXPOSE 9000 8265
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python3 -c "import requests; requests.get('http://localhost:9000/health')" || exit 1
 
-# Run the FastAPI application
-CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]
+# Default: simple mode (uvicorn). Set SERVE_MODE=ray for Ray Serve.
+ENV SERVE_MODE=simple
+
+CMD ["/workspace/entrypoint.sh"]
