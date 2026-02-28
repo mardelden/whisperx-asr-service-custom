@@ -23,7 +23,6 @@ A simple ASR API service powered by WhisperX for transcription with speaker diar
 ## Limitations
 
 - **Not production-grade**: Basic error handling, no authentication
-- **Single instance**: No built-in scaling or load balancing
 - **GPU required**: Needs NVIDIA GPU with 14GB+ VRAM for large models
 - **File size limits**: Large audio files (>1GB) can cause out-of-memory errors
 - **VRAM usage**: Memory consumption increases with file size and diarization
@@ -31,7 +30,14 @@ A simple ASR API service powered by WhisperX for transcription with speaker diar
 
 ## How It Works
 
-Audio → Whisper (transcription) → Wav2Vec2 (alignment) → Pyannote (speaker ID) → Output
+```
+Audio --> Whisper (transcription) --> Wav2Vec2 (alignment) --> Pyannote (speaker ID) --> Output
+```
+
+The service supports two serving modes:
+
+- **Simple mode** (default): Single-process uvicorn with an async GPU queue. Requests are serialized through a semaphore so only one pipeline runs on the GPU at a time. Good for low-traffic or development use.
+- **Ray Serve mode**: Each pipeline stage (Whisper, Align, Diarize) runs as an independent Ray Serve deployment with cross-request batching (`@serve.batch`). This enables stage-level parallelism -- while request A is being diarized, request B can start transcription on the same GPU. Scales from 1 GPU to multi-GPU by increasing `num_replicas`.
 
 ## Prerequisites
 
@@ -105,6 +111,8 @@ COMPUTE_TYPE=float16
 BATCH_SIZE=16
 PRELOAD_MODEL=large-v3
 MAX_FILE_SIZE_MB=1000
+# Serve mode: simple (default) or ray (Ray Serve with batching)
+SERVE_MODE=simple
 EOF
 ```
 
@@ -366,6 +374,60 @@ PRELOAD_MODEL=large-v3   # Leave empty to disable, or set to: tiny, base, small,
 MAX_FILE_SIZE_MB=1000    # Default 1GB, adjust lower for GPUs with <16GB VRAM
 ```
 
+### Serve Mode
+
+The service supports two modes, controlled by the `SERVE_MODE` environment variable in your `.env` file:
+
+#### Simple Mode (default)
+
+```bash
+SERVE_MODE=simple
+```
+
+Runs uvicorn directly. Requests are serialized through an async GPU semaphore so the event loop stays responsive while GPU work runs in a thread pool. This is backward-compatible with previous versions.
+
+You can tune `GPU_CONCURRENCY=1` (default) to control how many pipeline runs execute concurrently. Leave at 1 for single-GPU setups.
+
+#### Ray Serve Mode
+
+```bash
+SERVE_MODE=ray
+```
+
+Runs Ray Serve with three independent deployments:
+
+```
+HTTP --> Ray Serve Proxy --> ASR Ingress
+                                |
+                       +--------+--------+
+                       |        |        |
+                   Whisper   Align    Diarize
+                  (GPU 0.5) (GPU 0.3) (GPU 0.2)
+```
+
+Each deployment uses `@serve.batch` for cross-request batching -- multiple concurrent requests are grouped into a single GPU batch for higher throughput.
+
+**Ray Serve configuration variables** (all optional, shown with defaults):
+
+```bash
+# Cross-request batch sizes per stage (tune for GPU VRAM)
+WHISPER_BATCH_SIZE=4
+ALIGN_BATCH_SIZE=8
+DIARIZE_BATCH_SIZE=2
+
+# Seconds to wait collecting a batch before processing what's available
+BATCH_WAIT_TIMEOUT=0.1
+
+# Fractional GPU allocation per stage (must sum to <= total GPUs)
+WHISPER_GPU_FRACTION=0.5
+ALIGN_GPU_FRACTION=0.3
+DIARIZE_GPU_FRACTION=0.2
+```
+
+When running in Ray mode, the Ray Dashboard is available at `http://localhost:8265` for monitoring deployments, replicas, and request metrics.
+
+**Scaling to multi-GPU:** Increase `num_replicas` per deployment in `app/serve_deployments.py` or assign stages to specific GPUs by adjusting the GPU fractions. With 2+ GPUs, you can run Whisper on one GPU and Align+Diarize on another.
+
 ### Model Selection
 
 Available Whisper models (speed vs accuracy tradeoff):
@@ -388,15 +450,18 @@ Available Whisper models (speed vs accuracy tradeoff):
 ## Running the Service
 
 ```bash
-# Start in foreground (see logs)
-docker compose up
+# Start in simple mode (default)
+docker compose up -d
 
-# Or run in background
+# Or start in Ray Serve mode
+# Set SERVE_MODE=ray in your .env file, then:
 docker compose up -d
 
 # View logs
 docker compose logs -f
 ```
+
+**Note:** When using Ray Serve mode, Docker Compose is configured with `shm_size: 2g` for Ray's shared memory object store. The Ray Dashboard is exposed on port 8265.
 
 ## Monitoring and Logs
 
@@ -423,9 +488,18 @@ curl http://localhost:9000/health
 {
   "status": "healthy",
   "device": "cuda",
-  "loaded_models": ["large-v3"]
+  "loaded_models": ["large-v3"],
+  "serve_mode": "ray"
 }
 ```
+
+### Metrics Endpoint
+
+```bash
+curl http://localhost:9000/metrics
+```
+
+In simple mode this returns queue depth and in-flight request counts. In Ray mode it returns loaded model info (use the Ray Dashboard at port 8265 for detailed per-deployment metrics).
 
 ### Performance Monitoring
 
@@ -437,6 +511,9 @@ nvidia-smi -l 1
 
 # Docker container stats
 docker stats whisperx-asr-api
+
+# Ray Dashboard (Ray mode only)
+# Open http://localhost:8265 in your browser
 ```
 
 ## Offline Use
@@ -662,6 +739,15 @@ For issues and questions:
 - **Docker WhisperX:** [jim60105/docker-whisperX](https://github.com/jim60105/docker-whisperX)
 
 ## Changelog
+
+### v0.3.0 (2026-02-28)
+- Add Ray Serve mode for high-throughput ASR with cross-request batching
+- Refactor pipeline into shared stage functions (transcribe, align, diarize)
+- Add async GPU queue with semaphore for simple mode (non-blocking event loop)
+- Add `/metrics` endpoint for queue depth and pipeline monitoring
+- Add `SERVE_MODE` env var to switch between simple (uvicorn) and Ray Serve
+- Stage-level parallelism: concurrent requests processed across pipeline stages
+- Add `entrypoint.sh` for automatic mode switching in Docker
 
 ### v0.2.0 (2025-01-21)
 - Add /v1/models and /v1/audio/transcriptions endpoints for OpenAI API compatibility
