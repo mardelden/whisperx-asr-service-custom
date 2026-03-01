@@ -1,6 +1,6 @@
 # WhisperX ASR API Service
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/murtaza-nasir/whisperx-asr-service/releases/tag/v0.3.0)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue.svg)](https://github.com/murtaza-nasir/whisperx-asr-service/releases/tag/v0.3.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Docker Build](https://github.com/murtaza-nasir/whisperx-asr-service/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/murtaza-nasir/whisperx-asr-service/actions/workflows/docker-publish.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/learnedmachine/whisperx-asr-service)](https://hub.docker.com/r/learnedmachine/whisperx-asr-service)
