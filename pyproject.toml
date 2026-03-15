@@ -34,20 +34,20 @@ conflicts = [
 [tool.uv.sources]
 whisperx = { path = "./whisperx-custom", editable = true }
 torch = [
-  { index = "pytorch-cu130", extra = "gpu" },
+  { index = "pytorch-cu128", extra = "gpu" },
   { index = "pytorch-cpu", extra = "cpu" },
 ]
 torchaudio = [
-  { index = "pytorch-cu130", extra = "gpu" },
+  { index = "pytorch-cu128", extra = "gpu" },
   { index = "pytorch-cpu", extra = "cpu" },
 ]
 triton = [
-  { index = "pytorch-cu130", extra = "gpu" },
+  { index = "pytorch-cu128", extra = "gpu" },
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [[tool.uv.index]]
