@@ -13,22 +13,36 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gpu = []
+cpu = [
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+]
+gpu = [
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    "triton>=3.3.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "gpu" },
+    ],
+]
 
 [tool.uv.sources]
 whisperx = { path = "./whisperx-custom", editable = true }
 torch = [
-  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-  { index = "pytorch-cu130", marker = "sys_platform != 'darwin' and platform_machine == 'x86_64'" },
-  { index = "pytorch-cpu", marker = "sys_platform != 'darwin' and platform_machine != 'x86_64'" },
+  { index = "pytorch-cu130", extra = "gpu" },
+  { index = "pytorch-cpu", extra = "cpu" },
 ]
 torchaudio = [
-  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-  { index = "pytorch-cu130", marker = "sys_platform != 'darwin' and platform_machine == 'x86_64'" },
-  { index = "pytorch-cpu", marker = "sys_platform != 'darwin' and platform_machine != 'x86_64'" },
+  { index = "pytorch-cu130", extra = "gpu" },
+  { index = "pytorch-cpu", extra = "cpu" },
 ]
 triton = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu130", extra = "gpu" },
 ]
 
 [[tool.uv.index]]
