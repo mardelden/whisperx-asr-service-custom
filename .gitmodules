@@ -1,0 +1,3 @@
+[submodule "whisperx-custom"]
+	path = whisperx-custom
+	url = https://github.com/mardelden/whisperX-custom.git

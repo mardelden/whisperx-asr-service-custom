@@ -31,8 +31,8 @@ RUN pip3 install --no-cache-dir \
 # Set library path to prefer PyTorch's bundled cuDNN over system cuDNN
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/torch/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 
-# Install WhisperX from local custom fork (provided via additional_contexts in docker-compose)
-COPY --from=whisperx-custom . /tmp/whisperx-custom
+# Install WhisperX from local custom fork (git submodule)
+COPY whisperx-custom /tmp/whisperx-custom
 RUN pip3 install --no-cache-dir /tmp/whisperx-custom && rm -rf /tmp/whisperx-custom
 
 # Install API dependencies

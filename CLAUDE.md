@@ -59,7 +59,7 @@ app/
 ## Critical Rules
 
 - **HF_TOKEN required**: Diarization needs a HuggingFace token with access to pyannote models. Set via env var or `.env` file.
-- **WhisperX from local source**: Dockerfile installs WhisperX from sibling `whisperX-custom` repo via `additional_contexts` in docker-compose.dev.yml. No remote fork or sed patch needed.
+- **WhisperX as submodule**: `whisperx-custom/` is a git submodule. Clone with `--recurse-submodules`. Dockerfile and `uv sync` both use the local submodule path.
 - **Version tag must match `app/version.py`**: Currently `0.3.1`. The entrypoint.sh prints this on startup.
 - **GPU memory**: `large-v3` needs ~10GB VRAM. Service clears GPU memory between pipeline stages via `gc.collect()` + `torch.cuda.empty_cache()`.
 - **Shared memory**: Ray mode requires `shm_size: 8g` in docker-compose for Ray object store.
