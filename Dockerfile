@@ -31,17 +31,9 @@ RUN pip3 install --no-cache-dir \
 # Set library path to prefer PyTorch's bundled cuDNN over system cuDNN
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/torch/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 
-# Install WhisperX from sealambda's pyannote-audio-4 compatible branch
-# Credit: https://github.com/sealambda/whisperX/tree/feat/pyannote-audio-4
-RUN pip3 install --no-cache-dir git+https://github.com/sealambda/whisperX.git@feat/pyannote-audio-4
-
-# Patch WhisperX diarize.py to use 'token=' instead of 'use_token=' for pyannote.audio 4.0
-# This handles both single-line and multi-line formatting
-RUN sed -i 's/use_token=/token=/g' \
-    /usr/local/lib/python3.10/dist-packages/whisperx/diarize.py
-
-# Install latest pyannote.audio for community-1 model support
-RUN pip3 install --no-cache-dir --upgrade pyannote.audio
+# Install WhisperX from local custom fork (provided via additional_contexts in docker-compose)
+COPY --from=whisperx-custom . /tmp/whisperx-custom
+RUN pip3 install --no-cache-dir /tmp/whisperx-custom && rm -rf /tmp/whisperx-custom
 
 # Install API dependencies
 RUN pip3 install --no-cache-dir \

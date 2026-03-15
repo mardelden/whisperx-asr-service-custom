@@ -4,6 +4,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        - whisperx-custom=../whisperX-custom
 
     container_name: whisperx-asr-api-dev
     restart: unless-stopped
