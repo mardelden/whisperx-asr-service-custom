@@ -127,7 +127,7 @@ async def transcribe_audio(
         if diarize is not None or enable_diarization is not None:
             should_diarize = (diarize is True) or (enable_diarization is True)
         else:
-            should_diarize = True
+            should_diarize = False
         if return_speaker_embeddings is None:
             return_speaker_embeddings = False
 

@@ -3,6 +3,12 @@
 ## Build & Dev Commands
 
 ```bash
+# Local dev (uv, CPU)
+uv sync --extra cpu
+
+# Local dev (uv, GPU/CUDA)
+uv sync --extra gpu
+
 # Production (prebuilt image)
 docker compose up -d
 
@@ -63,7 +69,7 @@ app/
 - **Version tag must match `app/version.py`**: Currently `0.3.1`. The entrypoint.sh prints this on startup.
 - **GPU memory**: `large-v3` needs ~10GB VRAM. Service clears GPU memory between pipeline stages via `gc.collect()` + `torch.cuda.empty_cache()`.
 - **Shared memory**: Ray mode requires `shm_size: 8g` in docker-compose for Ray object store.
-- **Base image**: `nvidia/cuda:12.3.2-cudnn9-devel-ubuntu22.04` with PyTorch 2.3.0 + CUDA 12.1.
+- **Base image**: `nvidia/cuda:12.3.2-cudnn9-devel-ubuntu22.04` with PyTorch 2.3.0 + CUDA 12.1 (Docker). Local dev via `uv` uses PyTorch 2.8.0 with cpu/gpu extras.
 
 ## Key Environment Variables
 
@@ -78,3 +84,9 @@ app/
 | `PIPELINE_STRATEGY` | replicate | `replicate` or `split` (ray mode) |
 | `GPU_CONCURRENCY` | 1 | Concurrent GPU runs (simple mode) |
 | `NUM_GPU_REPLICAS` | 1 | Pipeline replicas (ray mode) |
+
+## Plans
+
+Implementation plans are stored in `plans/` as numbered markdown files (e.g., `plans/001-feature-name.md`). Reference these for architectural context on past decisions.
+
+Before implementing any plan make sure we capture it in `plans/` through creating new ones or updating existing ones.
