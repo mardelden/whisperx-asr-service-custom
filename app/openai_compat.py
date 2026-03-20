@@ -6,11 +6,9 @@ GET /v1/models
 """
 
 import os
-import tempfile
 import logging
 import time
 from typing import Optional, List, Union
-from pathlib import Path
 
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -37,10 +35,9 @@ from app.pipeline import (
     _whisper_models as loaded_models,
 )
 from app.queue import run_in_queue
+from app.upload import save_upload_to_tempfile, FileTooLargeError, MAX_FILE_SIZE_MB
 
 logger = logging.getLogger(__name__)
-
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))
 
 router = APIRouter(prefix="/v1/audio", tags=["OpenAI Compatible"])
 models_router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])
@@ -189,6 +186,7 @@ async def process_audio(
     timestamp_granularities: List[str],
     task: str = "transcribe",
     hotwords: Optional[str] = None,
+    request: Optional[Request] = None,
 ) -> Union[JSONResponse, PlainTextResponse]:
     """
     Core audio processing function shared by transcriptions and translations endpoints
@@ -224,20 +222,18 @@ async def process_audio(
                 param="temperature"
             )
 
-        # Save uploaded file to temporary location
-        suffix = Path(file.filename).suffix if file.filename else ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_audio_path = temp_file.name
-            content = await file.read()
-            temp_file.write(content)
-
-        # Check file size
-        file_size_mb = len(content) / (1024 * 1024)
-        if file_size_mb > MAX_FILE_SIZE_MB:
+        # Stream uploaded file to disk in chunks
+        cl = request.headers.get("content-length") if request else None
+        try:
+            temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                file,
+                content_length=int(cl) if cl else None,
+            )
+        except FileTooLargeError:
             return create_openai_error(
                 413,
-                f"File too large ({file_size_mb:.1f}MB). Maximum: {MAX_FILE_SIZE_MB}MB",
-                code="file_too_large"
+                f"File too large. Maximum: {MAX_FILE_SIZE_MB}MB",
+                code="file_too_large",
             )
 
         logger.info(f"OpenAI-compat: Processing {file.filename} ({file_size_mb:.1f}MB), model: {whisperx_model}, task: {task}")
@@ -359,6 +355,7 @@ async def create_transcription(
         timestamp_granularities=timestamp_granularities,
         task="transcribe",
         hotwords=hotwords,
+        request=request,
     )
 
 
@@ -398,6 +395,7 @@ async def create_translation(
         timestamp_granularities=timestamp_granularities,
         task="translate",
         hotwords=hotwords,
+        request=request,
     )
 
 

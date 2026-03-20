@@ -12,10 +12,8 @@ Start with:
 
 import os
 import logging
-import tempfile
 import warnings
 from typing import Optional, List
-from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form, Query, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -47,6 +45,7 @@ from app.serve_deployments import (
     AlignDeployment,
     DiarizeDeployment,
 )
+from app.upload import save_upload_to_tempfile, FileTooLargeError, MAX_FILE_SIZE_MB
 
 warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
 
@@ -55,8 +54,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))
 
 MODEL_MAPPING = {
     "whisper-1": os.getenv("OPENAI_WHISPER1_MODEL", DEFAULT_MODEL),
@@ -148,6 +145,7 @@ class ASRIngress:
     @fastapi_app.post("/asr")
     async def transcribe_audio(
         self,
+        request: Request,
         audio_file: UploadFile = File(...),
         task: str = Query("transcribe"),
         language: Optional[str] = Query(None),
@@ -176,17 +174,13 @@ class ASRIngress:
             if return_speaker_embeddings is None:
                 return_speaker_embeddings = False
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(audio_file.filename).suffix) as temp_file:
-                temp_audio_path = temp_file.name
-                content = await audio_file.read()
-                temp_file.write(content)
-
-            file_size_mb = len(content) / (1024 * 1024)
-            if file_size_mb > MAX_FILE_SIZE_MB:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large ({file_size_mb:.1f}MB). Maximum allowed: {MAX_FILE_SIZE_MB}MB.",
+            try:
+                temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                    audio_file,
+                    content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
                 )
+            except FileTooLargeError as e:
+                raise HTTPException(status_code=413, detail=str(e))
 
             logger.info(f"Processing {audio_file.filename} ({file_size_mb:.1f}MB), model: {model}")
             audio = whisperx.load_audio(temp_audio_path)
@@ -261,7 +255,7 @@ class ASRIngress:
             file=file, model=model, language=language, prompt=prompt,
             response_format=response_format, temperature=temperature,
             timestamp_granularities=timestamp_granularities, task="transcribe",
-            hotwords=hotwords,
+            hotwords=hotwords, request=request,
         )
 
     # ------------------------------------------------------------------
@@ -289,7 +283,7 @@ class ASRIngress:
             file=file, model=model, language=None, prompt=prompt,
             response_format=response_format, temperature=temperature,
             timestamp_granularities=timestamp_granularities, task="translate",
-            hotwords=hotwords,
+            hotwords=hotwords, request=request,
         )
 
     # ------------------------------------------------------------------
@@ -313,6 +307,7 @@ class ASRIngress:
     async def _process_openai_audio(
         self, file, model, language, prompt, response_format,
         temperature, timestamp_granularities, task, hotwords=None,
+        request=None,
     ):
         temp_audio_path = None
         try:
@@ -338,16 +333,15 @@ class ASRIngress:
                 return create_openai_error(400, "temperature must be between 0 and 1",
                                            param="temperature")
 
-            suffix = Path(file.filename).suffix if file.filename else ".wav"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_audio_path = temp_file.name
-                content = await file.read()
-                temp_file.write(content)
-
-            file_size_mb = len(content) / (1024 * 1024)
-            if file_size_mb > MAX_FILE_SIZE_MB:
+            cl = request.headers.get("content-length") if request else None
+            try:
+                temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                    file,
+                    content_length=int(cl) if cl else None,
+                )
+            except FileTooLargeError:
                 return create_openai_error(
-                    413, f"File too large ({file_size_mb:.1f}MB). Maximum: {MAX_FILE_SIZE_MB}MB",
+                    413, f"File too large. Maximum: {MAX_FILE_SIZE_MB}MB",
                     code="file_too_large",
                 )
 

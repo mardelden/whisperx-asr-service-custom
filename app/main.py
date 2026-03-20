@@ -4,13 +4,11 @@ Compatible with openai-whisper-asr-webservice API endpoints
 """
 
 import os
-import tempfile
 import logging
 import warnings
 from typing import Optional
-from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Query, HTTPException
+from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Request
 from fastapi.responses import JSONResponse
 import whisperx
 
@@ -29,6 +27,7 @@ from app.pipeline import (
     _whisper_models as loaded_models,
 )
 from app.queue import run_in_queue, get_queue_metrics
+from app.upload import save_upload_to_tempfile, FileTooLargeError
 
 # Suppress pyannote pooling warnings about degrees of freedom
 warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
@@ -40,7 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000"))
 SERVE_MODE = os.getenv("SERVE_MODE", "simple")
 
 # Initialize FastAPI app
@@ -82,6 +80,7 @@ async def root():
 
 @app.post("/asr")
 async def transcribe_audio(
+    request: Request,
     audio_file: UploadFile = File(...),
     task: str = Query("transcribe"),
     language: Optional[str] = Query(None),
@@ -131,23 +130,14 @@ async def transcribe_audio(
         if return_speaker_embeddings is None:
             return_speaker_embeddings = False
 
-        # Save uploaded file to temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(audio_file.filename).suffix) as temp_file:
-            temp_audio_path = temp_file.name
-            content = await audio_file.read()
-            temp_file.write(content)
-
-        # Check file size
-        file_size_mb = len(content) / (1024 * 1024)
-        if file_size_mb > MAX_FILE_SIZE_MB:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large ({file_size_mb:.1f}MB). Maximum allowed: {MAX_FILE_SIZE_MB}MB. "
-                       f"Large files may cause out-of-memory errors."
+        # Stream uploaded file to disk in chunks
+        try:
+            temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                audio_file,
+                content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
             )
-
-        if file_size_mb > 100:
-            logger.warning(f"Processing large file ({file_size_mb:.1f}MB) - may consume significant VRAM")
+        except FileTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
 
         logger.info(f"Processing audio file: {audio_file.filename} ({file_size_mb:.1f}MB), model: {model}, language: {language}")
 

@@ -35,7 +35,7 @@ FastAPI service wrapping WhisperX with two serve modes:
 - **Replicate** (`PIPELINE_STRATEGY=replicate`, default): Full 3-stage pipeline per GPU replica.
 - **Split** (`PIPELINE_STRATEGY=split`): Each stage as separate Ray deployment with fractional GPU allocation (whisper 0.5, align 0.3, diarize 0.2).
 
-Pipeline: Audio upload → Transcribe (Whisper) → Align (wav2vec2) → Diarize (pyannote) → JSON/SRT/VTT response.
+Pipeline: Audio upload → Transcribe (Whisper) → Align (wav2vec2) → Diarize (pyannote) → JSON/SRT/VTT/conversation response.
 
 Endpoints: `/asr` (native), `/v1/audio/transcriptions` and `/v1/audio/translations` (OpenAI-compatible), `/health`, `/metrics`.
 
@@ -48,6 +48,7 @@ app/
 ├── main.py                # Simple mode FastAPI app, /asr endpoint
 ├── pipeline.py            # Shared 3-stage pipeline: transcribe/align/diarize + model caching
 ├── queue.py               # Async GPU queue (semaphore + ThreadPoolExecutor)
+├── upload.py              # Streaming file upload utility, FileTooLargeError, size constants
 ├── schemas.py             # Pydantic models (OpenAI-compatible responses)
 ├── openai_compat.py       # /v1/audio/* endpoints, model mapping
 ├── serve_app.py           # Ray Serve ingress (ASRIngress class)
@@ -59,7 +60,10 @@ app/
 - **Thread-safe model loading**: Double-checked locking in `pipeline.py` — check cache, acquire lock, check again, load. Per-model and per-language caching.
 - **Async GPU queue** (`queue.py`): `asyncio.Semaphore` + `ThreadPoolExecutor` keeps event loop responsive while GPU work runs in threads. Configurable via `GPU_CONCURRENCY`.
 - **Graceful degradation**: Alignment and diarization catch exceptions and return partial results rather than failing the request.
+- **Diarization off by default**: Diarization only runs when explicitly requested via `diarize=true` or `enable_diarization=true`.
+- **Conversation output**: `output_format=conversation` merges consecutive segments from the same speaker into conversation turns.
 - **Ray Serve batching**: `@serve.batch` on split-mode deployments collects requests up to `max_batch_size` or `batch_wait_timeout_s` (0.1s default).
+- **Streaming uploads** (`upload.py`): Files are streamed to disk in chunks (default 8MB) to avoid loading entire uploads into memory. Size validated during streaming.
 - **OpenAI API compatibility**: Model name mapping (whisper-1 → large-v3), response format translation, standard error responses.
 
 ## Critical Rules
@@ -84,6 +88,7 @@ app/
 | `PIPELINE_STRATEGY` | replicate | `replicate` or `split` (ray mode) |
 | `GPU_CONCURRENCY` | 1 | Concurrent GPU runs (simple mode) |
 | `NUM_GPU_REPLICAS` | 1 | Pipeline replicas (ray mode) |
+| `UPLOAD_CHUNK_SIZE_BYTES` | 8388608 | Upload streaming chunk size (8MB) |
 
 ## Plans
 
