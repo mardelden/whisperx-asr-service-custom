@@ -28,6 +28,7 @@ from app.pipeline import (
     load_whisper_model,
     load_align_model,
     load_diarize_pipeline,
+    TranscribeParams,
     DEFAULT_MODEL,
     HF_TOKEN,
 )
@@ -115,6 +116,7 @@ class FullPipelineDeployment:
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
         return_speaker_embeddings: bool = False,
+        params: Optional[TranscribeParams] = None,
     ) -> Tuple[dict, Optional[dict]]:
         return _run_pipeline(
             audio,
@@ -129,6 +131,7 @@ class FullPipelineDeployment:
             min_speakers=min_speakers,
             max_speakers=max_speakers,
             return_speaker_embeddings=return_speaker_embeddings,
+            params=params,
         )
 
 
@@ -173,10 +176,12 @@ class WhisperDeployment:
         tasks: List[str],
         initial_prompts: List[Optional[str]],
         hotwords_list: List[Optional[str]],
+        params_list: List[Optional[TranscribeParams]],
     ) -> List[dict]:
         results = []
-        for audio, model_name, language, task, prompt, hotwords in zip(
-            audios, model_names, languages, tasks, initial_prompts, hotwords_list
+        for audio, model_name, language, task, prompt, hotwords, params in zip(
+            audios, model_names, languages, tasks, initial_prompts,
+            hotwords_list, params_list,
         ):
             result = _transcribe(
                 audio,
@@ -185,6 +190,7 @@ class WhisperDeployment:
                 task=task,
                 initial_prompt=prompt,
                 hotwords=hotwords,
+                params=params,
             )
             results.append(result)
         return results
@@ -197,9 +203,10 @@ class WhisperDeployment:
         task: str = "transcribe",
         initial_prompt: Optional[str] = None,
         hotwords: Optional[str] = None,
+        params: Optional[TranscribeParams] = None,
     ) -> dict:
         return await self.transcribe_batch(
-            audio, model_name, language, task, initial_prompt, hotwords
+            audio, model_name, language, task, initial_prompt, hotwords, params
         )
 
 

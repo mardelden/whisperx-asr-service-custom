@@ -28,6 +28,7 @@ from app.pipeline import (
     DEFAULT_MODEL,
     format_timestamp,
     sanitize_float_values,
+    TranscribeParams,
     _whisper_models as loaded_models,
 )
 from app.schemas import (
@@ -161,6 +162,34 @@ class ASRIngress:
         diarize: Optional[bool] = Query(None),
         enable_diarization: Optional[bool] = Query(None),
         return_speaker_embeddings: Optional[bool] = Query(None),
+        # ASR options
+        beam_size: Optional[int] = Query(None),
+        best_of: Optional[int] = Query(None),
+        patience: Optional[float] = Query(None),
+        length_penalty: Optional[float] = Query(None),
+        repetition_penalty: Optional[float] = Query(None),
+        no_repeat_ngram_size: Optional[int] = Query(None),
+        temperatures: Optional[str] = Query(None),
+        compression_ratio_threshold: Optional[float] = Query(None),
+        log_prob_threshold: Optional[float] = Query(None),
+        no_speech_threshold: Optional[float] = Query(None),
+        condition_on_previous_text: Optional[bool] = Query(None),
+        prompt_reset_on_temperature: Optional[float] = Query(None),
+        suppress_blank: Optional[bool] = Query(None),
+        without_timestamps: Optional[bool] = Query(None),
+        max_initial_timestamp: Optional[float] = Query(None),
+        suppress_numerals: Optional[bool] = Query(None),
+        max_new_tokens: Optional[int] = Query(None),
+        clip_timestamps: Optional[str] = Query(None),
+        hallucination_silence_threshold: Optional[float] = Query(None),
+        prefix: Optional[str] = Query(None),
+        prepend_punctuations: Optional[str] = Query(None),
+        append_punctuations: Optional[str] = Query(None),
+        # VAD options
+        vad_onset: Optional[float] = Query(None),
+        vad_offset: Optional[float] = Query(None),
+        chunk_size: Optional[int] = Query(None),
+        batch_size: Optional[int] = Query(None),
     ):
         temp_audio_path = None
         try:
@@ -173,6 +202,27 @@ class ASRIngress:
                 should_diarize = True
             if return_speaker_embeddings is None:
                 return_speaker_embeddings = False
+
+            params = TranscribeParams(
+                beam_size=beam_size, best_of=best_of, patience=patience,
+                length_penalty=length_penalty, repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size, temperatures=temperatures,
+                compression_ratio_threshold=compression_ratio_threshold,
+                log_prob_threshold=log_prob_threshold,
+                no_speech_threshold=no_speech_threshold,
+                condition_on_previous_text=condition_on_previous_text,
+                prompt_reset_on_temperature=prompt_reset_on_temperature,
+                suppress_blank=suppress_blank, without_timestamps=without_timestamps,
+                max_initial_timestamp=max_initial_timestamp,
+                suppress_numerals=suppress_numerals, max_new_tokens=max_new_tokens,
+                clip_timestamps=clip_timestamps,
+                hallucination_silence_threshold=hallucination_silence_threshold,
+                prefix=prefix, prepend_punctuations=prepend_punctuations,
+                append_punctuations=append_punctuations,
+                vad_onset=vad_onset, vad_offset=vad_offset,
+                chunk_size=chunk_size, batch_size=batch_size,
+            )
+            effective_params = params if params.has_overrides() else None
 
             try:
                 temp_audio_path, file_size_mb = await save_upload_to_tempfile(
@@ -195,12 +245,14 @@ class ASRIngress:
                     num_speakers=num_speakers, min_speakers=min_speakers,
                     max_speakers=max_speakers,
                     return_speaker_embeddings=return_speaker_embeddings,
+                    params=effective_params,
                 )
             else:
                 result = await self._whisper.transcribe.remote(
                     audio, model_name=model, language=language,
                     task=task, initial_prompt=initial_prompt,
                     hotwords=hotwords,
+                    params=effective_params,
                 )
                 if word_timestamps:
                     result = await self._align.align.remote(audio, result)

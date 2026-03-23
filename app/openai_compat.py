@@ -32,6 +32,7 @@ from app.pipeline import (
     format_timestamp,
     transcribe as pipeline_transcribe,
     align as pipeline_align,
+    TranscribeParams,
     _whisper_models as loaded_models,
 )
 from app.queue import run_in_queue
@@ -162,6 +163,7 @@ def _run_transcribe_and_align(
     task: str,
     need_word_timestamps: bool,
     hotwords: Optional[str] = None,
+    params: Optional[TranscribeParams] = None,
 ):
     """Blocking helper that runs transcription + optional alignment on GPU."""
     result = pipeline_transcribe(
@@ -170,6 +172,7 @@ def _run_transcribe_and_align(
         language=language,
         task=task,
         hotwords=hotwords,
+        params=params,
     )
     if need_word_timestamps:
         result = pipeline_align(audio, result)
@@ -187,6 +190,7 @@ async def process_audio(
     task: str = "transcribe",
     hotwords: Optional[str] = None,
     request: Optional[Request] = None,
+    params: Optional[TranscribeParams] = None,
 ) -> Union[JSONResponse, PlainTextResponse]:
     """
     Core audio processing function shared by transcriptions and translations endpoints
@@ -256,6 +260,7 @@ async def process_audio(
             task,
             need_word_timestamps,
             hotwords=hotwords or prompt,
+            params=params,
         )
 
         detected_language = result.get("language", language or "en")

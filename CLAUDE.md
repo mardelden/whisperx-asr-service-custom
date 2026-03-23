@@ -58,6 +58,7 @@ app/
 ## Key Patterns
 
 - **Thread-safe model loading**: Double-checked locking in `pipeline.py` — check cache, acquire lock, check again, load. Per-model and per-language caching.
+- **Per-request ASR/VAD options** (`pipeline.py`): `TranscribeParams` dataclass holds optional overrides for all WhisperX transcription options. `transcribe()` uses snapshot/mutate/restore on the cached model singleton — `copy.copy(whisper_model.options)` before, restore in `finally`. Covers ASR options (beam_size, patience, etc.), VAD params (vad_onset, vad_offset), and method args (chunk_size, batch_size).
 - **Async GPU queue** (`queue.py`): `asyncio.Semaphore` + `ThreadPoolExecutor` keeps event loop responsive while GPU work runs in threads. Configurable via `GPU_CONCURRENCY`.
 - **Graceful degradation**: Alignment and diarization catch exceptions and return partial results rather than failing the request.
 - **Diarization off by default**: Diarization only runs when explicitly requested via `diarize=true` or `enable_diarization=true`.

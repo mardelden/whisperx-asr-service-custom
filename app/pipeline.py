@@ -8,11 +8,13 @@ Ray Serve deployments.
 
 import os
 import gc
+import copy
 import math
 import logging
+import dataclasses
 import threading
 import warnings
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 
 # Suppress pyannote's torchcodec warning -- we decode audio via whisperx.load_audio (ffmpeg),
 # not pyannote's built-in decoder, so the missing torchcodec is irrelevant.
@@ -43,6 +45,68 @@ _model_load_lock = threading.Lock()
 _whisper_models: Dict[str, Any] = {}
 _align_models: Dict[str, Tuple[Any, Any]] = {}
 _diarize_pipeline: Optional[DiarizationPipeline] = None
+
+
+# ---------------------------------------------------------------------------
+# Per-request transcription overrides
+# ---------------------------------------------------------------------------
+@dataclasses.dataclass
+class TranscribeParams:
+    """Per-request overrides for WhisperX transcription options.
+
+    All fields default to None, meaning 'use the model default'.
+    Only non-None values override the cached model's settings.
+    """
+
+    # ASR options (TranscriptionOptions fields)
+    beam_size: Optional[int] = None
+    best_of: Optional[int] = None
+    patience: Optional[float] = None
+    length_penalty: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    no_repeat_ngram_size: Optional[int] = None
+    temperatures: Optional[str] = None  # comma-separated → List[float]
+    compression_ratio_threshold: Optional[float] = None
+    log_prob_threshold: Optional[float] = None
+    no_speech_threshold: Optional[float] = None
+    condition_on_previous_text: Optional[bool] = None
+    prompt_reset_on_temperature: Optional[float] = None
+    suppress_blank: Optional[bool] = None
+    without_timestamps: Optional[bool] = None
+    max_initial_timestamp: Optional[float] = None
+    max_new_tokens: Optional[int] = None
+    clip_timestamps: Optional[str] = None  # comma-separated → List[float]
+    hallucination_silence_threshold: Optional[float] = None
+    prefix: Optional[str] = None
+    prepend_punctuations: Optional[str] = None
+    append_punctuations: Optional[str] = None
+
+    # Instance attribute on FasterWhisperPipeline
+    suppress_numerals: Optional[bool] = None
+
+    # VAD params (mutated on whisper_model._vad_params and .vad_model)
+    vad_onset: Optional[float] = None
+    vad_offset: Optional[float] = None
+
+    # Direct args to whisper_model.transcribe()
+    chunk_size: Optional[int] = None
+    batch_size: Optional[int] = None
+
+    def has_overrides(self) -> bool:
+        return any(v is not None for v in dataclasses.asdict(self).values())
+
+
+# Fields on TranscriptionOptions that we allow per-request mutation of.
+_ASR_OPTION_FIELDS = [
+    "beam_size", "best_of", "patience", "length_penalty",
+    "repetition_penalty", "no_repeat_ngram_size",
+    "compression_ratio_threshold", "log_prob_threshold",
+    "no_speech_threshold", "condition_on_previous_text",
+    "prompt_reset_on_temperature", "suppress_blank",
+    "without_timestamps", "max_initial_timestamp",
+    "max_new_tokens", "hallucination_silence_threshold",
+    "prefix", "prepend_punctuations", "append_punctuations",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -117,31 +181,92 @@ def transcribe(
     task: str = "transcribe",
     initial_prompt: Optional[str] = None,
     hotwords: Optional[str] = None,
+    params: Optional[TranscribeParams] = None,
 ) -> dict:
-    """Run WhisperX transcription and return raw result dict."""
+    """Run WhisperX transcription and return raw result dict.
+
+    Per-request overrides are applied via snapshot/mutate/restore on the
+    cached model singleton.  All original state is restored in the finally
+    block regardless of success or failure.
+    """
     whisper_model = load_whisper_model(model_name)
 
-    # Set per-request options on the model's transcription options.
-    # The model is cached/shared, so we must reset after transcription.
-    if hotwords is not None:
-        whisper_model.options.hotwords = hotwords
-    if initial_prompt is not None:
-        whisper_model.options.initial_prompt = initial_prompt
+    # Snapshot original state so we can restore after transcription.
+    # Only snapshot when we actually have overrides to apply.
+    has_overrides = (
+        hotwords is not None
+        or initial_prompt is not None
+        or (params is not None and params.has_overrides())
+    )
 
-    transcribe_options: Dict[str, Any] = {
-        "batch_size": BATCH_SIZE,
-        "language": language,
-        "task": task,
-    }
+    if has_overrides:
+        original_options = copy.copy(whisper_model.options)
+        original_vad_params = dict(whisper_model._vad_params)
+        original_suppress_numerals = whisper_model.suppress_numerals
+        original_vad_onset = getattr(whisper_model.vad_model, "vad_onset", None)
+        original_vad_offset = getattr(whisper_model.vad_model, "vad_offset", None)
 
-    logger.info("Starting transcription...")
     try:
-        result = whisper_model.transcribe(audio, **transcribe_options)
-    finally:
+        # Apply per-request overrides
         if hotwords is not None:
-            whisper_model.options.hotwords = None
+            whisper_model.options.hotwords = hotwords
         if initial_prompt is not None:
-            whisper_model.options.initial_prompt = None
+            whisper_model.options.initial_prompt = initial_prompt
+
+        if params is not None:
+            # ASR option overrides (TranscriptionOptions fields)
+            for field_name in _ASR_OPTION_FIELDS:
+                value = getattr(params, field_name, None)
+                if value is not None:
+                    setattr(whisper_model.options, field_name, value)
+
+            # temperatures: comma-separated string → list of floats
+            if params.temperatures is not None:
+                whisper_model.options.temperatures = [
+                    float(t.strip()) for t in params.temperatures.split(",")
+                ]
+
+            # clip_timestamps: comma-separated string → list of floats
+            if params.clip_timestamps is not None:
+                whisper_model.options.clip_timestamps = [
+                    float(t.strip()) for t in params.clip_timestamps.split(",")
+                ]
+
+            # suppress_numerals: instance attribute on FasterWhisperPipeline
+            if params.suppress_numerals is not None:
+                whisper_model.suppress_numerals = params.suppress_numerals
+
+            # VAD param overrides (used by merge_chunks in transcribe())
+            if params.vad_onset is not None:
+                whisper_model._vad_params["vad_onset"] = params.vad_onset
+                if hasattr(whisper_model.vad_model, "vad_onset"):
+                    whisper_model.vad_model.vad_onset = params.vad_onset
+            if params.vad_offset is not None:
+                whisper_model._vad_params["vad_offset"] = params.vad_offset
+                if hasattr(whisper_model.vad_model, "vad_offset"):
+                    whisper_model.vad_model.vad_offset = params.vad_offset
+
+        # Build transcribe() call arguments
+        transcribe_options: Dict[str, Any] = {
+            "batch_size": params.batch_size if params and params.batch_size else BATCH_SIZE,
+            "language": language,
+            "task": task,
+        }
+        if params and params.chunk_size is not None:
+            transcribe_options["chunk_size"] = params.chunk_size
+
+        logger.info("Starting transcription...")
+        result = whisper_model.transcribe(audio, **transcribe_options)
+
+    finally:
+        if has_overrides:
+            whisper_model.options = original_options
+            whisper_model._vad_params = original_vad_params
+            whisper_model.suppress_numerals = original_suppress_numerals
+            if original_vad_onset is not None and hasattr(whisper_model.vad_model, "vad_onset"):
+                whisper_model.vad_model.vad_onset = original_vad_onset
+            if original_vad_offset is not None and hasattr(whisper_model.vad_model, "vad_offset"):
+                whisper_model.vad_model.vad_offset = original_vad_offset
 
     detected_language = result.get("language", language or "en")
     logger.info(f"Transcription complete. Detected language: {detected_language}")
@@ -283,6 +408,7 @@ def run_pipeline(
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
     return_speaker_embeddings: bool = False,
+    params: Optional[TranscribeParams] = None,
 ) -> Tuple[dict, Optional[dict]]:
     """
     Run the full 3-stage pipeline: transcribe -> align -> diarize.
@@ -296,6 +422,7 @@ def run_pipeline(
         task=task,
         initial_prompt=initial_prompt,
         hotwords=hotwords,
+        params=params,
     )
 
     if word_timestamps:

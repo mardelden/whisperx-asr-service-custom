@@ -24,6 +24,7 @@ from app.pipeline import (
     format_timestamp,
     sanitize_float_values,
     run_pipeline,
+    TranscribeParams,
     _whisper_models as loaded_models,
 )
 from app.queue import run_in_queue, get_queue_metrics
@@ -96,6 +97,35 @@ async def transcribe_audio(
     diarize: Optional[bool] = Query(None),
     enable_diarization: Optional[bool] = Query(None),
     return_speaker_embeddings: Optional[bool] = Query(None),
+    # ASR options
+    beam_size: Optional[int] = Query(None, description="Beam size for decoding (default: 5)"),
+    best_of: Optional[int] = Query(None, description="Number of candidates when sampling (default: 5)"),
+    patience: Optional[float] = Query(None, description="Beam search patience factor (default: 1.0)"),
+    length_penalty: Optional[float] = Query(None, description="Exponential length penalty (default: 1.0)"),
+    repetition_penalty: Optional[float] = Query(None, description="Repetition penalty (default: 1.0)"),
+    no_repeat_ngram_size: Optional[int] = Query(None, description="Prevent repetitions of ngrams with this size (default: 0)"),
+    temperatures: Optional[str] = Query(None, description="Comma-separated fallback temperatures (default: '0,0.2,0.4,0.6,0.8,1.0')"),
+    compression_ratio_threshold: Optional[float] = Query(None, description="Gzip compression ratio threshold (default: 2.4)"),
+    log_prob_threshold: Optional[float] = Query(None, description="Avg log probability threshold (default: -1.0)"),
+    no_speech_threshold: Optional[float] = Query(None, description="No-speech probability threshold (default: 0.6)"),
+    condition_on_previous_text: Optional[bool] = Query(None, description="Condition on previous output (default: false)"),
+    prompt_reset_on_temperature: Optional[float] = Query(None, description="Temperature above which prompt resets (default: 0.5)"),
+    suppress_blank: Optional[bool] = Query(None, description="Suppress blank outputs at sampling start (default: true)"),
+    without_timestamps: Optional[bool] = Query(None, description="Only sample text tokens (default: true)"),
+    max_initial_timestamp: Optional[float] = Query(None, description="Max initial timestamp (default: 0.0)"),
+    suppress_numerals: Optional[bool] = Query(None, description="Suppress numeral symbols (default: false)"),
+    max_new_tokens: Optional[int] = Query(None, description="Max new tokens per chunk"),
+    clip_timestamps: Optional[str] = Query(None, description="Comma-separated clip timestamp pairs"),
+    hallucination_silence_threshold: Optional[float] = Query(None, description="Skip hallucinated text after this silence duration"),
+    prefix: Optional[str] = Query(None, description="Prefix text for first window"),
+    prepend_punctuations: Optional[str] = Query(None, description="Punctuations to merge with next word"),
+    append_punctuations: Optional[str] = Query(None, description="Punctuations to merge with previous word"),
+    # VAD options
+    vad_onset: Optional[float] = Query(None, description="VAD speech detection onset threshold (default: 0.500)"),
+    vad_offset: Optional[float] = Query(None, description="VAD speech detection offset threshold (default: 0.363)"),
+    chunk_size: Optional[int] = Query(None, description="VAD chunk size in seconds (default: 30)"),
+    # Batch size override
+    batch_size: Optional[int] = Query(None, description="Override transcription batch size"),
 ):
     """
     Main ASR endpoint compatible with openai-whisper-asr-webservice
@@ -144,6 +174,27 @@ async def transcribe_audio(
         # Load audio
         audio = whisperx.load_audio(temp_audio_path)
 
+        # Build per-request transcription params
+        params = TranscribeParams(
+            beam_size=beam_size, best_of=best_of, patience=patience,
+            length_penalty=length_penalty, repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size, temperatures=temperatures,
+            compression_ratio_threshold=compression_ratio_threshold,
+            log_prob_threshold=log_prob_threshold,
+            no_speech_threshold=no_speech_threshold,
+            condition_on_previous_text=condition_on_previous_text,
+            prompt_reset_on_temperature=prompt_reset_on_temperature,
+            suppress_blank=suppress_blank, without_timestamps=without_timestamps,
+            max_initial_timestamp=max_initial_timestamp,
+            suppress_numerals=suppress_numerals, max_new_tokens=max_new_tokens,
+            clip_timestamps=clip_timestamps,
+            hallucination_silence_threshold=hallucination_silence_threshold,
+            prefix=prefix, prepend_punctuations=prepend_punctuations,
+            append_punctuations=append_punctuations,
+            vad_onset=vad_onset, vad_offset=vad_offset,
+            chunk_size=chunk_size, batch_size=batch_size,
+        )
+
         # Run pipeline through the async queue (GPU semaphore)
         result, speaker_embeddings = await run_in_queue(
             run_pipeline,
@@ -159,6 +210,7 @@ async def transcribe_audio(
             min_speakers=min_speakers,
             max_speakers=max_speakers,
             return_speaker_embeddings=return_speaker_embeddings,
+            params=params if params.has_overrides() else None,
         )
 
         detected_language = result.get("language", language or "en")
