@@ -195,6 +195,12 @@ async def transcribe_audio(
             chunk_size=chunk_size, batch_size=batch_size,
         )
 
+        # Validate params before hitting the GPU
+        if params.has_overrides():
+            validation_errors = params.validate()
+            if validation_errors:
+                raise HTTPException(status_code=400, detail=validation_errors)
+
         # Run pipeline through the async queue (GPU semaphore)
         result, speaker_embeddings = await run_in_queue(
             run_pipeline,

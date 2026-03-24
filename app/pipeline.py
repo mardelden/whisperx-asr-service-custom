@@ -95,6 +95,55 @@ class TranscribeParams:
     def has_overrides(self) -> bool:
         return any(v is not None for v in dataclasses.asdict(self).values())
 
+    def validate(self) -> List[str]:
+        """Return list of validation error messages. Empty list = valid."""
+        errors = []
+        # Whisper encoder window is fixed at 30s (3000 mel frames)
+        if self.chunk_size is not None and not (1 <= self.chunk_size <= 30):
+            errors.append("chunk_size must be between 1 and 30 (Whisper encoder limit is 30s)")
+        if self.beam_size is not None and self.beam_size < 1:
+            errors.append("beam_size must be >= 1")
+        if self.best_of is not None and self.best_of < 1:
+            errors.append("best_of must be >= 1")
+        if self.patience is not None and self.patience <= 0:
+            errors.append("patience must be > 0")
+        if self.length_penalty is not None and self.length_penalty <= 0:
+            errors.append("length_penalty must be > 0")
+        if self.repetition_penalty is not None and self.repetition_penalty < 1.0:
+            errors.append("repetition_penalty must be >= 1.0")
+        if self.no_repeat_ngram_size is not None and self.no_repeat_ngram_size < 0:
+            errors.append("no_repeat_ngram_size must be >= 0")
+        if self.no_speech_threshold is not None and not (0.0 <= self.no_speech_threshold <= 1.0):
+            errors.append("no_speech_threshold must be between 0.0 and 1.0")
+        if self.vad_onset is not None and not (0.0 < self.vad_onset <= 1.0):
+            errors.append("vad_onset must be between 0.0 (exclusive) and 1.0")
+        if self.vad_offset is not None and not (0.0 < self.vad_offset <= 1.0):
+            errors.append("vad_offset must be between 0.0 (exclusive) and 1.0")
+        if self.compression_ratio_threshold is not None and self.compression_ratio_threshold <= 0:
+            errors.append("compression_ratio_threshold must be > 0")
+        if self.log_prob_threshold is not None and self.log_prob_threshold > 0:
+            errors.append("log_prob_threshold must be <= 0 (log probabilities are negative)")
+        if self.prompt_reset_on_temperature is not None and not (0.0 <= self.prompt_reset_on_temperature <= 1.0):
+            errors.append("prompt_reset_on_temperature must be between 0.0 and 1.0")
+        if self.max_initial_timestamp is not None and self.max_initial_timestamp < 0:
+            errors.append("max_initial_timestamp must be >= 0")
+        if self.batch_size is not None and self.batch_size < 1:
+            errors.append("batch_size must be >= 1")
+        if self.max_new_tokens is not None and self.max_new_tokens < 1:
+            errors.append("max_new_tokens must be >= 1")
+        if self.hallucination_silence_threshold is not None and self.hallucination_silence_threshold <= 0:
+            errors.append("hallucination_silence_threshold must be > 0")
+        if self.temperatures is not None:
+            try:
+                vals = [float(t.strip()) for t in self.temperatures.split(",")]
+                for v in vals:
+                    if not (0.0 <= v <= 1.0):
+                        errors.append("temperatures: each value must be between 0.0 and 1.0")
+                        break
+            except ValueError:
+                errors.append("temperatures must be comma-separated numbers (e.g. '0,0.2,0.4')")
+        return errors
+
 
 # Fields on TranscriptionOptions that we allow per-request mutation of.
 _ASR_OPTION_FIELDS = [

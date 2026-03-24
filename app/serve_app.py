@@ -224,6 +224,11 @@ class ASRIngress:
             )
             effective_params = params if params.has_overrides() else None
 
+            if effective_params is not None:
+                validation_errors = effective_params.validate()
+                if validation_errors:
+                    raise HTTPException(status_code=400, detail=validation_errors)
+
             try:
                 temp_audio_path, file_size_mb = await save_upload_to_tempfile(
                     audio_file,
