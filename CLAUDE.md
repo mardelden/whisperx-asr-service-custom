@@ -25,6 +25,24 @@ python tests/stress_test.py
 curl -F "audio_file=@test.wav" http://localhost:9000/asr
 ```
 
+## Production Deployment
+
+Production runs on a Proxmox LXC (`whisper`, VMID 208, at `192.168.10.24` on `pve-ai`), managed via Ansible + `just` commands from the homelab repo — **not** Docker. Service on port 9000, GPU-enabled.
+
+| Command | What it does | When to use |
+|---------|--------------|-------------|
+| `just whisper` | Provision LXC + install + configure | First deploy or container recreate |
+| `just whisper-install` | `git pull` + `uv sync` + restart `whisper.service` | After code changes |
+| `just whisper-config` | Systemd restart only | Config changes, no code pull |
+
+**Deploy after code changes:** push to `main` → run `just whisper-install` from local machine. The Ansible role SSHes to `root@whisper`, pulls `HEAD` into `/opt/whisper`, runs `uv sync --extra gpu`, and restarts the systemd service.
+
+**Pin a version:** `just whisper -e whisper_git_version=v1.2.3`
+
+**Logs:** `ssh root@whisper journalctl -u whisper --no-pager -n 100`
+
+The Dockerfile/`docker-compose.yml` and GitHub Docker-publish workflow are for external users of this fork, not the production path.
+
 ## Architecture
 
 FastAPI service wrapping WhisperX with two serve modes:
