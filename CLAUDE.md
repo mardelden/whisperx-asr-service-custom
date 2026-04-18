@@ -55,7 +55,7 @@ FastAPI service wrapping WhisperX with two serve modes:
 
 Pipeline: Audio upload → Transcribe (Whisper) → Align (wav2vec2) → Diarize (pyannote) → JSON/SRT/VTT/conversation response.
 
-Endpoints: `/asr` (native), `/v1/audio/transcriptions` and `/v1/audio/translations` (OpenAI-compatible), `/health`, `/metrics`.
+Endpoints: `/asr` (native), `/diarize` (standalone speaker diarization, no Whisper), `/v1/audio/transcriptions` and `/v1/audio/translations` (OpenAI-compatible), `/health`, `/metrics`.
 
 ## Module Structure
 

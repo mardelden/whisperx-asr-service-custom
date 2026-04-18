@@ -28,6 +28,7 @@ from app.pipeline import (
     DEFAULT_MODEL,
     format_timestamp,
     sanitize_float_values,
+    diarize_only as _diarize_only,
     TranscribeParams,
     _whisper_models as loaded_models,
 )
@@ -278,6 +279,63 @@ class ASRIngress:
 
         except Exception as e:
             logger.error(f"Transcription error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            if temp_audio_path and os.path.exists(temp_audio_path):
+                try:
+                    os.unlink(temp_audio_path)
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------
+    # /diarize endpoint
+    # ------------------------------------------------------------------
+    @fastapi_app.post("/diarize")
+    async def diarize_audio(
+        self,
+        request: Request,
+        audio_file: UploadFile = File(...),
+        num_speakers: Optional[int] = Query(None),
+        min_speakers: Optional[int] = Query(None),
+        max_speakers: Optional[int] = Query(None),
+    ):
+        temp_audio_path = None
+        try:
+            try:
+                temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                    audio_file,
+                    content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
+                )
+            except FileTooLargeError as e:
+                raise HTTPException(status_code=413, detail=str(e))
+
+            logger.info(f"Diarize: {audio_file.filename} ({file_size_mb:.1f}MB)")
+            audio = whisperx.load_audio(temp_audio_path)
+            audio_duration = round(len(audio) / 16000, 3)
+
+            if self._pipeline:
+                result = await self._pipeline.diarize_only.remote(
+                    audio, num_speakers=num_speakers,
+                    min_speakers=min_speakers, max_speakers=max_speakers,
+                )
+            elif self._diarize:
+                result = await self._diarize.diarize_only.remote(
+                    audio, num_speakers=num_speakers,
+                    min_speakers=min_speakers, max_speakers=max_speakers,
+                )
+            else:
+                result = _diarize_only(
+                    audio, num_speakers=num_speakers,
+                    min_speakers=min_speakers, max_speakers=max_speakers,
+                )
+
+            result["audio_duration"] = audio_duration
+            return JSONResponse(content=result)
+
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Diarization error: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
         finally:
             if temp_audio_path and os.path.exists(temp_audio_path):

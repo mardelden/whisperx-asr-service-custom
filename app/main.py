@@ -24,6 +24,7 @@ from app.pipeline import (
     format_timestamp,
     sanitize_float_values,
     run_pipeline,
+    diarize_only,
     TranscribeParams,
     _whisper_models as loaded_models,
 )
@@ -314,6 +315,54 @@ async def transcribe_audio(
         logger.error(f"Transcription error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            try:
+                os.unlink(temp_audio_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file: {str(e)}")
+
+
+@app.post("/diarize")
+async def diarize_audio(
+    request: Request,
+    audio_file: UploadFile = File(...),
+    num_speakers: Optional[int] = Query(None, description="Exact number of speakers"),
+    min_speakers: Optional[int] = Query(None, description="Minimum number of speakers"),
+    max_speakers: Optional[int] = Query(None, description="Maximum number of speakers"),
+):
+    """Speaker diarization only — no transcription. Returns speaker segments with timestamps."""
+    temp_audio_path = None
+    try:
+        try:
+            temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                audio_file,
+                content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
+            )
+        except FileTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+
+        logger.info(f"Diarize: {audio_file.filename} ({file_size_mb:.1f}MB)")
+
+        audio = whisperx.load_audio(temp_audio_path)
+        audio_duration = round(len(audio) / 16000, 3)
+
+        result = await run_in_queue(
+            diarize_only,
+            audio,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+        result["audio_duration"] = audio_duration
+
+        return JSONResponse(content=result)
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Diarization error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if temp_audio_path and os.path.exists(temp_audio_path):
             try:

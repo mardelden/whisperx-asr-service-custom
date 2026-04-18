@@ -409,6 +409,51 @@ def diarize(
     return result, speaker_embeddings
 
 
+def diarize_only(
+    audio: np.ndarray,
+    num_speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+) -> dict:
+    """Run pyannote speaker diarization without transcription.
+
+    Returns dict with speaker segments, count, and no text.
+    """
+    if not HF_TOKEN:
+        raise ValueError("HF_TOKEN is required for speaker diarization")
+
+    logger.info("Starting standalone diarization...")
+    diarize_model = load_diarize_pipeline()
+
+    diarize_params: Dict[str, Any] = {}
+    if num_speakers is not None:
+        diarize_params["num_speakers"] = num_speakers
+        logger.info(f"Diarization with exact speaker count: {num_speakers}")
+    else:
+        if min_speakers is not None:
+            diarize_params["min_speakers"] = min_speakers
+        if max_speakers is not None:
+            diarize_params["max_speakers"] = max_speakers
+        logger.info(f"Diarization with speaker range: {min_speakers}-{max_speakers}")
+
+    diarize_output = diarize_model(audio, **diarize_params)
+
+    if hasattr(diarize_output, "exclusive_speaker_diarization"):
+        diarize_output = diarize_output.exclusive_speaker_diarization
+        logger.info("Using exclusive speaker diarization")
+
+    segments = [
+        {"start": round(row["start"], 3), "end": round(row["end"], 3), "speaker": row["speaker"]}
+        for _, row in diarize_output.iterrows()
+    ]
+    unique_speakers = len(set(seg["speaker"] for seg in segments))
+
+    logger.info(f"Standalone diarization complete: {len(segments)} segments, {unique_speakers} speakers")
+    clear_gpu_memory()
+
+    return {"segments": segments, "num_speakers": unique_speakers}
+
+
 # ---------------------------------------------------------------------------
 # Output formatting helpers
 # ---------------------------------------------------------------------------

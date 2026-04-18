@@ -25,6 +25,7 @@ from app.pipeline import (
     transcribe as _transcribe,
     align as _align,
     diarize as _diarize,
+    diarize_only as _diarize_only,
     load_whisper_model,
     load_align_model,
     load_diarize_pipeline,
@@ -132,6 +133,20 @@ class FullPipelineDeployment:
             max_speakers=max_speakers,
             return_speaker_embeddings=return_speaker_embeddings,
             params=params,
+        )
+
+    async def diarize_only(
+        self,
+        audio: np.ndarray,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ) -> dict:
+        return _diarize_only(
+            audio,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
         )
 
 
@@ -300,4 +315,18 @@ class DiarizeDeployment:
         return await self.diarize_batch(
             audio, result, num_speakers, min_speakers,
             max_speakers, return_speaker_embeddings,
+        )
+
+    async def diarize_only(
+        self,
+        audio: np.ndarray,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ) -> dict:
+        return _diarize_only(
+            audio,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
         )
