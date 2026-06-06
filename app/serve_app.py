@@ -588,6 +588,7 @@ class ASRIngress:
             response_data = {
                 "text": result.get("segments", []),
                 "language": detected_language,
+                "language_probability": result.get("language_probability", 1.0),
                 "segments": result.get("segments", []),
                 "word_segments": result.get("word_segments", []),
             }

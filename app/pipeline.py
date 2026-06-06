@@ -318,7 +318,8 @@ def transcribe(
                 whisper_model.vad_model.vad_offset = original_vad_offset
 
     detected_language = result.get("language", language or "en")
-    logger.info(f"Transcription complete. Detected language: {detected_language}")
+    language_probability = result.get("language_probability", 1.0)
+    logger.info(f"Transcription complete. Detected language: {detected_language} ({language_probability:.2f})")
 
     clear_gpu_memory()
     return result
@@ -330,6 +331,8 @@ def transcribe(
 def align(audio: np.ndarray, result: dict) -> dict:
     """Run Wav2Vec2 alignment to get word-level timestamps."""
     detected_language = result.get("language", "en")
+    # whisperx.align() returns a dict without language metadata — preserve it.
+    language_probability = result.get("language_probability", 1.0)
     logger.info("Aligning timestamps...")
     try:
         model_a, metadata = load_align_model(detected_language)
@@ -341,6 +344,8 @@ def align(audio: np.ndarray, result: dict) -> dict:
             DEVICE,
             return_char_alignments=False,
         )
+        result["language"] = detected_language
+        result["language_probability"] = language_probability
         logger.info("Timestamp alignment complete")
         clear_gpu_memory()
     except Exception as e:

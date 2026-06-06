@@ -221,12 +221,14 @@ async def transcribe_audio(
         )
 
         detected_language = result.get("language", language or "en")
+        language_probability = result.get("language_probability", 1.0)
 
         # Format output based on requested format
         if output_format == "json":
             response_data = {
                 "text": result.get("segments", []),
                 "language": detected_language,
+                "language_probability": language_probability,
                 "segments": result.get("segments", []),
                 "word_segments": result.get("word_segments", [])
             }
