@@ -429,6 +429,7 @@ async def transcribe_contract(
         result, _ = await run_in_queue(
             run_pipeline,
             audio_data,
+            model_name=kwargs["model"] or DEFAULT_MODEL,
             language=kwargs["language"],
             task=kwargs["task"],
             initial_prompt=kwargs["initial_prompt"],

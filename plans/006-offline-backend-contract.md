@@ -42,6 +42,24 @@ ingress, replicate + split).
 - **Silence** — returns empty segments (plan 002's VAD fix), satisfying
   acceptance test #3 (no hallucinated text).
 
+## Parameter parity with legacy `/asr`
+
+Audited so `/transcribe` is a safe superset of `/asr` for transcription before
+the legacy path is retired:
+
+- **Decoding knobs (26) + `language` / `task` / `word_timestamps`** — full
+  parity via `config` + the `decoding` bag (every `TranscribeParams` field is
+  reachable; `vad_chunk_size`/`chunk_size`, list `temperatures`/`clip_timestamps`
+  normalized).
+- **`model`** — added to `/transcribe` (top-level `config.model`, or
+  `decoding.model`; falls back to the service default). Advertised in
+  `/capabilities`. Restores parity with `/asr`'s per-request `model`.
+- **`output_format` / `output`** — intentionally `/asr`-only. The contract
+  response is a fixed JSON shape; asr-server consumes structured segments.
+- **Diarization params** (`num_speakers`, `min_speakers`, `max_speakers`,
+  `diarize`, `enable_diarization`, `return_speaker_embeddings`) — intentionally
+  `/asr`-only. `/transcribe` is transcription-only; `/diarize` owns these.
+
 ## `/health` body shape (resolved)
 
 `/health` now returns `{"status":"ok"}` (was `"healthy"`) in both serve modes,

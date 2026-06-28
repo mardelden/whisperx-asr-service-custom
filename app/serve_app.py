@@ -390,9 +390,11 @@ class ASRIngress:
             audio_data = whisperx.load_audio(temp_audio_path)
             duration = len(audio_data) / SAMPLE_RATE
 
+            model_name = kwargs["model"] or DEFAULT_MODEL
             if self._pipeline:
                 result, _ = await self._pipeline.run.remote(
                     audio_data,
+                    model_name=model_name,
                     language=kwargs["language"], task=kwargs["task"],
                     initial_prompt=kwargs["initial_prompt"], hotwords=kwargs["hotwords"],
                     word_timestamps=kwargs["word_timestamps"],
@@ -401,6 +403,7 @@ class ASRIngress:
             else:
                 result = await self._whisper.transcribe.remote(
                     audio_data,
+                    model_name=model_name,
                     language=kwargs["language"], task=kwargs["task"],
                     initial_prompt=kwargs["initial_prompt"], hotwords=kwargs["hotwords"],
                     params=effective_params,

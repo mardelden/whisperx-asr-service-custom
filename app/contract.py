@@ -93,6 +93,9 @@ def build_transcribe_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
 
     task = config.get("task", "transcribe")
     word_timestamps = bool(config.get("word_timestamps", True))
+    # Optional per-request model override (parity with the legacy /asr `model`
+    # param). None -> caller falls back to the service default model.
+    model = config.get("model") or (config.get("decoding") or {}).get("model")
 
     decoding = config.get("decoding") or {}
     if not isinstance(decoding, dict):
@@ -118,6 +121,7 @@ def build_transcribe_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
         params.clip_timestamps = _to_param_list(decoding["clip_timestamps"])
 
     return {
+        "model": model,
         "language": language,
         "task": task,
         "word_timestamps": word_timestamps,
@@ -178,6 +182,9 @@ def build_capabilities(model_name: str, batch_size: int) -> dict:
         "task": ["transcribe", "translate"],
         "parameters": [
             # Fixed (top-level config) params
+            {"key": "model", "scope": "fixed", "type": "enum",
+             "values": ["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+             "default": model_name},
             {"key": "language", "scope": "fixed", "type": "string", "default": "auto"},
             {"key": "task", "scope": "fixed", "type": "enum",
              "values": ["transcribe", "translate"], "default": "transcribe"},
