@@ -136,7 +136,7 @@ class ASRIngress:
     @fastapi_app.get("/health")
     async def health_check(self):
         return {
-            "status": "healthy",
+            "status": "ok",
             "device": DEVICE,
             "loaded_models": list(loaded_models.keys()),
             "serve_mode": "ray",

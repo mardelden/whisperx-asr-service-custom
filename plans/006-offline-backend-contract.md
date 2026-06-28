@@ -42,13 +42,15 @@ ingress, replicate + split).
 - **Silence** — returns empty segments (plan 002's VAD fix), satisfying
   acceptance test #3 (no hallucinated text).
 
+## `/health` body shape (resolved)
+
+`/health` now returns `{"status":"ok"}` (was `"healthy"`) in both serve modes,
+matching the contract for fleet uniformity across all backends. Extra fields
+(`device`, `loaded_models`, `serve_mode`) remain — additive.
+
 ## Open items flagged to the team (NOT code changes)
 
-1. **`/health` body shape.** Contract wants `200 {"status":"ok"}`; WhisperX
-   returns `{"status":"healthy", ...}`. The adoption brief says keep `/health`
-   unchanged, so this was left as-is — needs a decision on whether asr-server's
-   adapter checks `status == "ok"`.
-2. **Acceptance #5 (RTFx + peak VRAM report)** is a benchmarking deliverable,
+1. **Acceptance #5 (RTFx + peak VRAM report)** is a benchmarking deliverable,
    not an interface change — tracked with the ongoing BATCH_SIZE perf work.
 
 ## Files

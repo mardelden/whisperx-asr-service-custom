@@ -461,9 +461,13 @@ async def capabilities():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring"""
+    """Health check endpoint for monitoring.
+
+    Returns {"status": "ok"} per the offline backend contract (uniform across
+    all STT backends). Extra fields are additive.
+    """
     return {
-        "status": "healthy",
+        "status": "ok",
         "device": DEVICE,
         "loaded_models": list(loaded_models.keys()),
         "serve_mode": SERVE_MODE,
