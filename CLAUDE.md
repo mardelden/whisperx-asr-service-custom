@@ -55,7 +55,7 @@ FastAPI service wrapping WhisperX with two serve modes:
 
 Pipeline: Audio upload → Transcribe (Whisper) → Align (wav2vec2) → Diarize (pyannote) → JSON/SRT/VTT/conversation response.
 
-Endpoints: `/asr` (native), `/diarize` (standalone speaker diarization, no Whisper), `/v1/audio/transcriptions` and `/v1/audio/translations` (OpenAI-compatible), `/health`, `/metrics`.
+Endpoints: `/asr` (native), `/transcribe` + `/capabilities` (offline backend contract — see `app/contract.py`), `/diarize` (standalone speaker diarization, no Whisper), `/v1/audio/transcriptions` and `/v1/audio/translations` (OpenAI-compatible), `/health`, `/metrics`.
 
 ## Module Structure
 
@@ -68,6 +68,7 @@ app/
 ├── queue.py               # Async GPU queue (semaphore + ThreadPoolExecutor)
 ├── upload.py              # Streaming file upload utility, FileTooLargeError, size constants
 ├── schemas.py             # Pydantic models (OpenAI-compatible responses)
+├── contract.py            # Offline backend contract helpers (/transcribe, /capabilities)
 ├── openai_compat.py       # /v1/audio/* endpoints, model mapping
 ├── serve_app.py           # Ray Serve ingress (ASRIngress class)
 └── serve_deployments.py   # Ray Serve deployments (FullPipeline, Whisper, Align, Diarize)

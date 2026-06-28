@@ -30,6 +30,15 @@ from app.pipeline import (
 )
 from app.queue import run_in_queue, get_queue_metrics
 from app.upload import save_upload_to_tempfile, FileTooLargeError
+from app.contract import (
+    SAMPLE_RATE,
+    parse_config,
+    build_transcribe_kwargs,
+    format_response,
+    build_capabilities,
+    contract_error,
+    read_config_part,
+)
 
 # Suppress pyannote pooling warnings about degrees of freedom
 warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
@@ -371,6 +380,83 @@ async def diarize_audio(
                 os.unlink(temp_audio_path)
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file: {str(e)}")
+
+
+@app.post("/transcribe")
+async def transcribe_contract(
+    request: Request,
+    audio: UploadFile = File(...),
+):
+    """Offline backend contract endpoint: multipart audio + JSON `config`.
+
+    Wraps the existing WhisperX pipeline (transcription-only, no diarization)
+    and returns the contract response shape. See docs/input/offline-backend-contract.md.
+    """
+    temp_audio_path = None
+    try:
+        # Parse the JSON config part and map it onto pipeline kwargs
+        form = await request.form()
+        try:
+            config = parse_config(await read_config_part(form))
+            kwargs = build_transcribe_kwargs(config)
+        except ValueError as e:
+            return contract_error(400, str(e), "invalid_config")
+
+        params = kwargs["params"]
+        if params.has_overrides():
+            errors = params.validate()
+            if errors:
+                return contract_error(400, "; ".join(errors), "invalid_decoding")
+
+        # Stream upload to disk
+        try:
+            temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                audio,
+                content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
+            )
+        except FileTooLargeError as e:
+            return contract_error(413, str(e), "file_too_large")
+
+        logger.info(
+            f"/transcribe: {audio.filename} ({file_size_mb:.1f}MB), "
+            f"lang={kwargs['language']}, task={kwargs['task']}, "
+            f"word_timestamps={kwargs['word_timestamps']}"
+        )
+
+        audio_data = whisperx.load_audio(temp_audio_path)
+        duration = len(audio_data) / SAMPLE_RATE
+
+        result, _ = await run_in_queue(
+            run_pipeline,
+            audio_data,
+            language=kwargs["language"],
+            task=kwargs["task"],
+            initial_prompt=kwargs["initial_prompt"],
+            hotwords=kwargs["hotwords"],
+            word_timestamps=kwargs["word_timestamps"],
+            should_diarize=False,
+            params=params if params.has_overrides() else None,
+        )
+
+        return JSONResponse(
+            content=format_response(result, duration, kwargs["word_timestamps"])
+        )
+
+    except Exception as e:
+        logger.error(f"/transcribe error: {str(e)}", exc_info=True)
+        return contract_error(500, str(e), "internal_error")
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            try:
+                os.unlink(temp_audio_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file: {str(e)}")
+
+
+@app.get("/capabilities")
+async def capabilities():
+    """Advertise supported parameters, languages, and tasks (offline contract)."""
+    return build_capabilities(DEFAULT_MODEL, BATCH_SIZE)
 
 
 @app.get("/health")

@@ -48,6 +48,15 @@ from app.serve_deployments import (
     DiarizeDeployment,
 )
 from app.upload import save_upload_to_tempfile, FileTooLargeError, MAX_FILE_SIZE_MB
+from app.contract import (
+    SAMPLE_RATE,
+    parse_config,
+    build_transcribe_kwargs,
+    format_response,
+    build_capabilities,
+    contract_error,
+    read_config_part,
+)
 
 warnings.filterwarnings("ignore", message=".*degrees of freedom is <= 0.*")
 
@@ -343,6 +352,79 @@ class ASRIngress:
                     os.unlink(temp_audio_path)
                 except Exception:
                     pass
+
+    # ------------------------------------------------------------------
+    # Offline backend contract: /transcribe + /capabilities
+    # ------------------------------------------------------------------
+    @fastapi_app.post("/transcribe")
+    async def transcribe_contract(
+        self,
+        request: Request,
+        audio: UploadFile = File(...),
+    ):
+        temp_audio_path = None
+        try:
+            form = await request.form()
+            try:
+                config = parse_config(await read_config_part(form))
+                kwargs = build_transcribe_kwargs(config)
+            except ValueError as e:
+                return contract_error(400, str(e), "invalid_config")
+
+            params = kwargs["params"]
+            effective_params = params if params.has_overrides() else None
+            if effective_params is not None:
+                errors = params.validate()
+                if errors:
+                    return contract_error(400, "; ".join(errors), "invalid_decoding")
+
+            try:
+                temp_audio_path, file_size_mb = await save_upload_to_tempfile(
+                    audio,
+                    content_length=int(cl) if (cl := request.headers.get("content-length")) else None,
+                )
+            except FileTooLargeError as e:
+                return contract_error(413, str(e), "file_too_large")
+
+            logger.info(f"/transcribe: {audio.filename} ({file_size_mb:.1f}MB)")
+            audio_data = whisperx.load_audio(temp_audio_path)
+            duration = len(audio_data) / SAMPLE_RATE
+
+            if self._pipeline:
+                result, _ = await self._pipeline.run.remote(
+                    audio_data,
+                    language=kwargs["language"], task=kwargs["task"],
+                    initial_prompt=kwargs["initial_prompt"], hotwords=kwargs["hotwords"],
+                    word_timestamps=kwargs["word_timestamps"],
+                    should_diarize=False, params=effective_params,
+                )
+            else:
+                result = await self._whisper.transcribe.remote(
+                    audio_data,
+                    language=kwargs["language"], task=kwargs["task"],
+                    initial_prompt=kwargs["initial_prompt"], hotwords=kwargs["hotwords"],
+                    params=effective_params,
+                )
+                if kwargs["word_timestamps"]:
+                    result = await self._align.align.remote(audio_data, result)
+
+            return JSONResponse(
+                content=format_response(result, duration, kwargs["word_timestamps"])
+            )
+
+        except Exception as e:
+            logger.error(f"/transcribe error: {e}", exc_info=True)
+            return contract_error(500, str(e), "internal_error")
+        finally:
+            if temp_audio_path and os.path.exists(temp_audio_path):
+                try:
+                    os.unlink(temp_audio_path)
+                except Exception:
+                    pass
+
+    @fastapi_app.get("/capabilities")
+    async def capabilities(self):
+        return build_capabilities(DEFAULT_MODEL, BATCH_SIZE)
 
     # ------------------------------------------------------------------
     # OpenAI-compat: /v1/audio/transcriptions
